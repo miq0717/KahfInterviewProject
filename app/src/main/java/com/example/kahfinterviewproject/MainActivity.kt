@@ -10,6 +10,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -25,11 +26,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.kahfinterviewproject.ui.theme.KahfInterviewProjectTheme
+import org.xbill.DNS.ARecord
+import org.xbill.DNS.CNAMERecord
 import org.xbill.DNS.Lookup
 import org.xbill.DNS.SimpleResolver
 import org.xbill.DNS.Type
@@ -57,10 +60,12 @@ class MainActivity : ComponentActivity() {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .background(color = Color.Blue)
                         .padding(8.dp)
                         .padding(top = 20.dp)
                 ) {
                     TextField(
+                        modifier = Modifier.fillMaxWidth(),
                         value = inputUrl,
                         onValueChange = { userGivenUrl ->
                             inputUrl = userGivenUrl
@@ -71,24 +76,53 @@ class MainActivity : ComponentActivity() {
                         keyboardActions = KeyboardActions(
                             onGo = {
                                 val domain = extractDomain(inputUrl)
-                                Thread{
+                                Thread {
                                     try {
                                         val privateDnsServer = "40.120.32.171"
                                         val resolver = SimpleResolver(privateDnsServer)
-                                        val lookUp = Lookup(domain, Type.A)
+                                        val lookUp = Lookup(domain, Type.ANY)
                                         lookUp.setResolver(resolver)
                                         val result = lookUp.run()
+
                                         runOnUiThread {
-//                                            Log.e("LOOKUP RESULT", "$result")
-                                            if (lookUp.result == Lookup.SUCCESSFUL && result != null) {
-                                                loadUrlInWebView(webView,inputUrl)
+                                            if (lookUp.result == Lookup.SUCCESSFUL && result != null && result.isNotEmpty()) {
+                                                var isBlocked = false
+
+                                                for (record in result) {
+                                                    when (record) {
+                                                        is ARecord -> {
+                                                            val ip = record.address.hostAddress
+                                                            if (ip.isNullOrBlank() || ip == "0.0.0.0") {
+                                                                // Blank or invalid IP indicates blocked domain
+                                                                isBlocked = true
+                                                                break
+                                                            }
+                                                        }
+
+                                                        is CNAMERecord -> {
+                                                            val cname = record.target.toString()
+                                                            if (cname.contains("blocked.kahfguard.com")) {
+                                                                // blocked.kahfguard.com CName name indicates blocked domain
+                                                                isBlocked = true
+                                                                break
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                if (isBlocked) {
+                                                    showBlockedView(this@MainActivity)
+                                                } else {
+                                                    loadUrlInWebView(webView, inputUrl)
+                                                }
                                             } else {
-//                                                Log.e("LOOKUP ELSE", "BLOCKED")
+                                                //Null result. So treat as blocked
                                                 showBlockedView(this@MainActivity)
                                             }
                                         }
+
                                     } catch (e: Exception) {
-//                                        Log.e("THREAD CATCH", "${e.message}")
+                                        // No valid result. So treat as blocked
                                         runOnUiThread {
                                             showBlockedView(this@MainActivity)
                                         }
@@ -97,7 +131,10 @@ class MainActivity : ComponentActivity() {
                             }
                         ),
                         label = {
-                            Text("Enter Url")
+                            Text(
+                                modifier = Modifier.padding(vertical = 8.dp),
+                                text = "Enter Url"
+                            )
                         }
 
                     )
