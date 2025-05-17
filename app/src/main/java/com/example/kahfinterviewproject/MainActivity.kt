@@ -193,16 +193,6 @@ private fun checkDomainWithDnsJava(domain: String): Boolean {
         // No valid result. So treat as blocked
         false
     }
-    return try {
-        val privateDnsServer = "40.120.32.171"
-        val resolver = SimpleResolver(privateDnsServer)
-        val lookup = Lookup(domain, Type.A)
-        lookup.setResolver(resolver)
-        val result = lookup.run()
-        lookup.result == Lookup.SUCCESSFUL && result != null
-    } catch (e: Exception) {
-        false
-    }
 }
 
 private fun blockResponse(): WebResourceResponse {
