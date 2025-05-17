@@ -3,7 +3,8 @@ package com.example.kahfinterviewproject
 import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Bundle
-import android.util.Log
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
@@ -31,11 +32,17 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.kahfinterviewproject.ui.theme.KahfInterviewProjectTheme
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.xbill.DNS.ARecord
 import org.xbill.DNS.CNAMERecord
 import org.xbill.DNS.Lookup
 import org.xbill.DNS.SimpleResolver
 import org.xbill.DNS.Type
+import java.io.ByteArrayInputStream
 import java.net.URI
 
 class MainActivity : ComponentActivity() {
@@ -53,6 +60,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun SimpleBrowserView() {
         var inputUrl by remember { mutableStateOf("https://www.google.com") }
+        val finalUrl = if (inputUrl.startsWith("http")) inputUrl else "http://$inputUrl"
         var webView by remember { mutableStateOf<WebView?>(null) }
 
         Scaffold(
@@ -75,59 +83,20 @@ class MainActivity : ComponentActivity() {
                         ),
                         keyboardActions = KeyboardActions(
                             onGo = {
-                                val domain = extractDomain(inputUrl)
-                                Thread {
-                                    try {
-                                        val privateDnsServer = "40.120.32.171"
-                                        val resolver = SimpleResolver(privateDnsServer)
-                                        val lookUp = Lookup(domain, Type.ANY)
-                                        lookUp.setResolver(resolver)
-                                        val result = lookUp.run()
-
-                                        runOnUiThread {
-                                            if (lookUp.result == Lookup.SUCCESSFUL && result != null && result.isNotEmpty()) {
-                                                var isBlocked = false
-
-                                                for (record in result) {
-                                                    when (record) {
-                                                        is ARecord -> {
-                                                            val ip = record.address.hostAddress
-                                                            if (ip.isNullOrBlank() || ip == "0.0.0.0") {
-                                                                // Blank or invalid IP indicates blocked domain
-                                                                isBlocked = true
-                                                                break
-                                                            }
-                                                        }
-
-                                                        is CNAMERecord -> {
-                                                            val cname = record.target.toString()
-                                                            if (cname.contains("blocked.kahfguard.com")) {
-                                                                // blocked.kahfguard.com CName name indicates blocked domain
-                                                                isBlocked = true
-                                                                break
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                if (isBlocked) {
-                                                    showBlockedView(this@MainActivity)
-                                                } else {
-                                                    loadUrlInWebView(webView, inputUrl)
-                                                }
-                                            } else {
-                                                //Null result. So treat as blocked
-                                                showBlockedView(this@MainActivity)
-                                            }
-                                        }
-
-                                    } catch (e: Exception) {
-                                        // No valid result. So treat as blocked
-                                        runOnUiThread {
-                                            showBlockedView(this@MainActivity)
-                                        }
+                                val domain = extractDomain(finalUrl)
+                                CoroutineScope(Dispatchers.Main).launch {
+                                    val isAllowed = withContext(Dispatchers.IO) {
+                                        checkDomainWithDnsJava(domain)
                                     }
-                                }.start()
+
+                                    if (isAllowed) {
+                                        webView?.loadUrl(inputUrl)
+                                    } else {
+                                        showBlockedView(this@MainActivity)
+                                        webView?.loadUrl("about:blank")
+
+                                    }
+                                }
                             }
                         ),
                         label = {
@@ -156,7 +125,7 @@ class MainActivity : ComponentActivity() {
                             displayZoomControls = false
                         }
 
-                        webViewClient = WebViewClient()
+                        webViewClient = createDnsFilteringWebViewClient()
 
                         webView = this
                     }
@@ -166,13 +135,92 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private fun createDnsFilteringWebViewClient(): WebViewClient {
+    return object : WebViewClient() {
+        override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+            val url = request?.url?.toString() ?: return null
+            val domain = extractDomain(url)
+
+
+            val isSafe = runBlocking(Dispatchers.IO) {
+                checkDomainWithDnsJava(domain)
+            }
+
+            return if (isSafe) null else blockResponse()
+        }
+    }
+}
+
+private fun checkDomainWithDnsJava(domain: String): Boolean {
+    return try {
+        val privateDnsServer = "40.120.32.171"
+        val resolver = SimpleResolver(privateDnsServer)
+        val lookUp = Lookup(domain, Type.ANY)
+        lookUp.setResolver(resolver)
+        val result = lookUp.run()
+        if (lookUp.result == Lookup.SUCCESSFUL && result != null && result.isNotEmpty()) {
+            var isBlocked = false
+
+            for (record in result) {
+                when (record) {
+                    is ARecord -> {
+                        val ip = record.address.hostAddress
+                        if (ip.isNullOrBlank() || ip == "0.0.0.0") {
+                            // Blank or invalid IP indicates blocked domain
+                            isBlocked = true
+                            break
+                        }
+                    }
+
+                    is CNAMERecord -> {
+                        val cname = record.target.toString()
+                        if (cname.contains("blocked.kahfguard.com")) {
+                            // blocked.kahfguard.com CName name indicates blocked domain
+                            isBlocked = true
+                            break
+                        }
+                    }
+                }
+            }
+
+            !isBlocked
+        } else {
+            //Null result. So treat as blocked
+            false
+        }
+
+    } catch (e: Exception) {
+        // No valid result. So treat as blocked
+        false
+    }
+    return try {
+        val privateDnsServer = "40.120.32.171"
+        val resolver = SimpleResolver(privateDnsServer)
+        val lookup = Lookup(domain, Type.A)
+        lookup.setResolver(resolver)
+        val result = lookup.run()
+        lookup.result == Lookup.SUCCESSFUL && result != null
+    } catch (e: Exception) {
+        false
+    }
+}
+
+private fun blockResponse(): WebResourceResponse {
+    return WebResourceResponse(
+        "text/plain",
+        "UTF-8",
+        403,
+        "Blocked by DNS policy",
+        mapOf(),
+        ByteArrayInputStream("Blocked by policy.".toByteArray())
+    )
+}
+
 private fun extractDomain(url: String): String {
     return try {
-        URI(if (url.startsWith("http")) url else "http://$url").host ?: url
+        URI(url).host?.removePrefix("www.") ?: ""
     } catch (e: Exception) {
-        Log.e("BROWSER", "${e.message}")
-        e.printStackTrace()
-        url
+        ""
     }
 }
 
