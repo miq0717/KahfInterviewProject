@@ -214,10 +214,6 @@ private fun extractDomain(url: String): String {
     }
 }
 
-private fun loadUrlInWebView(webView: WebView?, filteredUrl: String) {
-    webView?.loadUrl(filteredUrl)
-}
-
 private fun showBlockedView(mContext: Context) {
     Toast.makeText(mContext, "Website Blocked", Toast.LENGTH_SHORT).show()
 }
